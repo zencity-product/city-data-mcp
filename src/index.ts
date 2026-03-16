@@ -19,7 +19,7 @@ import { createServer } from "node:http";
 import { z } from "zod";
 import { resolveCity, listCities } from "./cities.js";
 import { querySocrata, formatSocrataResults } from "./sources/socrata.js";
-import { resolveCensusFips, listCensusCities, queryCensus, formatCensusResults } from "./sources/census.js";
+import { queryCensus, formatCensusResults } from "./sources/census.js";
 import { resolveFredCity, listFredCities, queryFred, formatFredResults } from "./sources/fred.js";
 import { resolveFbiCity, listFbiCities, queryFbiCrime, formatFbiResults } from "./sources/fbi.js";
 import { resolveBlsCity, listBlsCities, queryBls, formatBlsResults } from "./sources/bls.js";
@@ -156,8 +156,7 @@ Use this to explore what's happening in a specific city.`,
         )
         .join("\n");
 
-      const censusCities = listCensusCities();
-      const censusList = censusCities.map((c) => c.name).join(", ");
+      const censusList = "Any US city, town, or CDP (~30,000 places)";
 
       const fredCities = listFredCities();
       const fredList = fredCities.map((c) => c.name).join(", ");
@@ -169,7 +168,7 @@ Use this to explore what's happening in a specific city.`,
         content: [
           {
             type: "text" as const,
-            text: `# Civic Data Hub — Available Data\n\n## Crime & 311 (Socrata)\n${cityList}\n\n## Demographics (US Census ACS)\n${censusCities.length} cities: ${censusList}\n\n## Economic Indicators (FRED)\n${fredCities.length} metros: ${fredList}\n\n## Employment (BLS)\n${blsCities.length} metros: ${blsCities.map((c) => c.name).join(", ")}\n\n## FBI Crime Statistics (UCR)\n${fbiCities.length} cities (state-level)\n\n## Tools\n- \`query_city_data\` — crime/311 data\n- \`query_demographics\` — Census demographic profile\n- \`compare_demographics\` — side-by-side Census comparison\n- \`query_economics\` — FRED economic indicators\n- \`query_employment\` — BLS employment & unemployment\n- \`query_national_crime\` — FBI UCR crime statistics\n- \`create_cohort\` — find peer cities by similarity (the magic one)`,
+            text: `# Civic Data Hub — Available Data\n\n## Crime & 311 (Socrata)\n${cityList}\n\n## Demographics (US Census ACS)\n${censusList}\n\n## Economic Indicators (FRED)\n${fredCities.length} metros: ${fredList}\n\n## Employment (BLS)\n${blsCities.length} metros: ${blsCities.map((c) => c.name).join(", ")}\n\n## FBI Crime Statistics (UCR)\n${fbiCities.length} cities (state-level)\n\n## Tools\n- \`query_city_data\` — crime/311 data\n- \`query_demographics\` — Census data for ANY US city\n- \`compare_demographics\` — side-by-side Census comparison\n- \`query_economics\` — FRED economic indicators\n- \`query_employment\` — BLS employment & unemployment\n- \`query_national_crime\` — FBI UCR crime statistics\n- \`create_cohort\` — find peer cities by similarity (the magic one)`,
           },
         ],
       };
@@ -182,11 +181,9 @@ Use this to explore what's happening in a specific city.`,
     "query_demographics",
     {
       title: "Query City Demographics",
-      description: `Query US Census demographic data for a city. Returns population, income, poverty rate, education, housing costs, and commuting patterns.
+      description: `Query US Census demographic data for ANY US city, town, or CDP (~30,000 places). Returns population, income, poverty rate, education, housing costs, and commuting patterns.
 
-Covers 30 major US cities. Data from American Community Survey (ACS) 5-Year Estimates.
-
-Use this to understand the socioeconomic profile of a city or compare cities.`,
+Data from American Community Survey (ACS) 5-Year Estimates. Not limited to major cities — works for Boise, Chapel Hill, Juneau, or any incorporated place.`,
       inputSchema: z.object({
         city: z
           .string()
@@ -196,23 +193,8 @@ Use this to understand the socioeconomic profile of a city or compare cities.`,
       }),
     },
     async (args) => {
-      const match = resolveCensusFips(args.city);
-      if (!match) {
-        const available = listCensusCities()
-          .map((c) => c.name)
-          .join(", ");
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `City "${args.city}" not found in Census data. Available cities: ${available}`,
-            },
-          ],
-        };
-      }
-
       try {
-        const result = await queryCensus(match.key);
+        const result = await queryCensus(args.city);
         const formatted = formatCensusResults(result);
         return {
           content: [
@@ -227,7 +209,7 @@ Use this to understand the socioeconomic profile of a city or compare cities.`,
           content: [
             {
               type: "text" as const,
-              text: `Error fetching Census data for ${match.fips.name}: ${error instanceof Error ? error.message : String(error)}`,
+              text: `Error fetching Census data: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
         };
@@ -241,9 +223,7 @@ Use this to understand the socioeconomic profile of a city or compare cities.`,
     "compare_demographics",
     {
       title: "Compare City Demographics",
-      description: `Compare demographic data across multiple US cities side by side. Returns population, income, poverty, education, housing, and commuting for each city.
-
-Use this to see how cities stack up against each other.`,
+      description: `Compare demographic data across multiple US cities side by side. Works for ANY US city (~30,000 places). Returns population, income, poverty, education, housing, and commuting.`,
       inputSchema: z.object({
         cities: z
           .array(z.string())
@@ -258,17 +238,12 @@ Use this to see how cities stack up against each other.`,
       const results: Array<{ city: string; error?: string; data?: Awaited<ReturnType<typeof queryCensus>> }> = [];
 
       for (const cityInput of args.cities) {
-        const match = resolveCensusFips(cityInput);
-        if (!match) {
-          results.push({ city: cityInput, error: `Not found` });
-          continue;
-        }
         try {
-          const data = await queryCensus(match.key);
+          const data = await queryCensus(cityInput);
           results.push({ city: data.city, data });
         } catch (error) {
           results.push({
-            city: match.fips.name,
+            city: cityInput,
             error: error instanceof Error ? error.message : String(error),
           });
         }

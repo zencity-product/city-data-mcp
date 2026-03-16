@@ -14,18 +14,47 @@
  * (e.g., "find cities with similar economics" or "similar size and region").
  */
 
-import { queryCensus, listCensusCities, resolveCensusFips, type CensusResult } from "./census.js";
+import { queryCensus, type CensusResult } from "./census.js";
 
-// Region mapping for geographic similarity
-const CITY_REGIONS: Record<string, string> = {
-  nyc: "northeast", boston: "northeast", philadelphia: "northeast", pittsburgh: "northeast",
-  dc: "south", atlanta: "south", miami: "south", charlotte: "south", nashville: "south",
-  raleigh: "south", jacksonville: "south", memphis: "south", baltimore: "south",
-  houston: "south", dallas: "south", austin: "south", san_antonio: "south",
-  chicago: "midwest", detroit: "midwest", minneapolis: "midwest", columbus: "midwest",
-  indianapolis: "midwest", milwaukee: "midwest",
-  denver: "west", phoenix: "west", seattle: "west", sf: "west", la: "west",
-  san_diego: "west", portland: "west",
+// ~75 major US cities for cohort comparison pool
+// The target can be ANY city, but we compare against this curated set
+// to keep API calls reasonable (each city = 1 Census API call)
+const COHORT_POOL = [
+  "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
+  "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose",
+  "Austin", "Jacksonville", "Fort Worth", "Columbus", "Indianapolis",
+  "Charlotte", "San Francisco", "Seattle", "Denver", "Washington",
+  "Nashville", "Oklahoma City", "El Paso", "Boston", "Portland",
+  "Las Vegas", "Memphis", "Louisville", "Baltimore", "Milwaukee",
+  "Albuquerque", "Tucson", "Fresno", "Sacramento", "Mesa",
+  "Kansas City", "Atlanta", "Omaha", "Colorado Springs", "Raleigh",
+  "Long Beach", "Virginia Beach", "Miami", "Oakland", "Minneapolis",
+  "Tampa", "Tulsa", "Arlington", "New Orleans", "Wichita",
+  "Cleveland", "Bakersfield", "Aurora", "Anaheim", "Honolulu",
+  "Santa Ana", "Riverside", "Corpus Christi", "Lexington", "Pittsburgh",
+  "St. Louis", "Cincinnati", "Anchorage", "Henderson", "Greensboro",
+  "Plano", "Newark", "Lincoln", "Orlando", "Irvine",
+  "Toledo", "Durham", "Chula Vista", "Boise", "Madison",
+];
+
+// Region mapping by state FIPS for geographic similarity
+const STATE_REGIONS: Record<string, string> = {
+  // Northeast
+  "09": "northeast", "23": "northeast", "25": "northeast", "33": "northeast",
+  "34": "northeast", "36": "northeast", "42": "northeast", "44": "northeast", "50": "northeast",
+  // Midwest
+  "17": "midwest", "18": "midwest", "19": "midwest", "20": "midwest", "26": "midwest",
+  "27": "midwest", "29": "midwest", "31": "midwest", "38": "midwest", "39": "midwest",
+  "46": "midwest", "55": "midwest",
+  // South
+  "01": "south", "05": "south", "10": "south", "11": "south", "12": "south",
+  "13": "south", "21": "south", "22": "south", "24": "south", "28": "south",
+  "37": "south", "40": "south", "45": "south", "47": "south", "48": "south",
+  "51": "south", "54": "south",
+  // West
+  "02": "west", "04": "west", "06": "west", "08": "west", "15": "west",
+  "16": "west", "30": "west", "32": "west", "35": "west", "41": "west",
+  "49": "west", "53": "west", "56": "west",
 };
 
 export type CohortCriteria = "balanced" | "size" | "economics" | "housing" | "education" | "commuting" | "region";
@@ -97,22 +126,18 @@ export async function buildCohort(
   criteria: CohortCriteria = "balanced",
   cohortSize: number = 5
 ): Promise<{ target: CensusResult; cohort: CityScore[]; criteria: CohortCriteria }> {
-  // Resolve the target city
-  const targetMatch = resolveCensusFips(targetCityInput);
-  if (!targetMatch) {
-    throw new Error(`City "${targetCityInput}" not found in Census data.`);
-  }
+  // Fetch target city data (works for ANY city)
+  const targetData = await queryCensus(targetCityInput);
 
-  // Fetch target city data
-  const targetData = await queryCensus(targetMatch.key);
-
-  // Fetch all other cities in parallel
-  const allCities = listCensusCities().filter((c) => c.key !== targetMatch.key);
+  // Fetch comparison pool in parallel (batched to avoid rate limits)
+  const poolCities = COHORT_POOL.filter(
+    (c) => c.toLowerCase() !== targetData.city.toLowerCase().replace(/\s+(city|town)$/i, "")
+  );
 
   const cityResults = await Promise.allSettled(
-    allCities.map(async (c) => {
-      const data = await queryCensus(c.key);
-      return { key: c.key, data };
+    poolCities.map(async (cityName) => {
+      const data = await queryCensus(cityName);
+      return { key: `${data.stateFips}_${data.placeFips}`, data };
     })
   );
 
@@ -123,9 +148,11 @@ export async function buildCohort(
   // Score each city against the target
   const weights = WEIGHT_PRESETS[criteria];
   const scored: CityScore[] = [];
+  const targetKey = `${targetData.stateFips}_${targetData.placeFips}`;
 
   for (const { key, data } of successfulCities) {
-    const score = computeSimilarity(targetMatch.key, targetData, key, data, weights);
+    if (key === targetKey) continue; // Skip if same city appeared in pool
+    const score = computeSimilarity(targetKey, targetData, key, data, weights);
     scored.push(score);
   }
 
@@ -217,9 +244,11 @@ function computeSimilarity(
   totalScore += wfhScore * weights.workFromHomeRate;
   if (wfhScore < 0.15) reasons.push("similar WFH rates");
 
-  // Region
-  const targetRegion = CITY_REGIONS[targetKey] || "unknown";
-  const candidateRegion = CITY_REGIONS[candidateKey] || "unknown";
+  // Region — derive from state FIPS (first 2 chars of the key)
+  const targetStateFips = targetKey.split("_")[0];
+  const candidateStateFips = candidateKey.split("_")[0];
+  const targetRegion = STATE_REGIONS[targetStateFips] || "unknown";
+  const candidateRegion = STATE_REGIONS[candidateStateFips] || "unknown";
   const sameRegion = targetRegion === candidateRegion;
   const regionScore = sameRegion ? 0 : 1;
   totalScore += regionScore * weights.region;

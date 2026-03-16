@@ -1,30 +1,21 @@
 /**
- * US Census Bureau API Client
+ * US Census Bureau API Client — Dynamic Edition
  *
- * The Census API provides demographic, economic, and housing data for every
- * geography in the US — from national down to block groups.
- *
- * We use the American Community Survey (ACS) 5-Year Estimates, which is the
- * most comprehensive dataset. It covers:
- * - Population, age, race/ethnicity
- * - Household income, poverty rate
- * - Education levels
- * - Housing (median home value, rent, vacancy)
- * - Commuting patterns
+ * Now supports ANY US city/town/CDP — not just a hardcoded list.
  *
  * How it works:
- * 1. You request specific variables (e.g., B01003_001E = total population)
- * 2. For a specific geography (e.g., place:5128000 = Los Angeles city)
- * 3. The API returns an array of arrays: [[header row], [data row], ...]
+ * 1. User asks for "Boise" or "Chapel Hill" or any place name
+ * 2. We search the Census API for all places matching that name
+ * 3. We fetch demographic data for the matched place
+ *
+ * The Census defines ~30,000 "places" (cities, towns, CDPs, boroughs).
+ * All of them have ACS data available.
  *
  * API key: Free, register at https://api.census.gov/data/key_signup.html
  * Set as CENSUS_API_KEY environment variable.
- *
- * Docs: https://api.census.gov/data.html
  */
 
 // Census variable codes → human-readable names
-// These are from the ACS 5-Year Estimates Detailed Tables
 const VARIABLES: Record<string, { code: string; label: string; format: "number" | "dollar" | "percent" }> = {
   totalPopulation:    { code: "B01003_001E", label: "Total Population", format: "number" },
   medianAge:          { code: "B01002_001E", label: "Median Age", format: "number" },
@@ -44,60 +35,58 @@ const VARIABLES: Record<string, { code: string; label: string; format: "number" 
   workFromHome:       { code: "B08301_021E", label: "Work From Home", format: "number" },
 };
 
-// FIPS place codes for major cities
-// These map city names to their Census geography identifiers
-// Format: state FIPS (2 digits) + place FIPS (5 digits)
-const CITY_FIPS: Record<string, { state: string; place: string; name: string }> = {
-  nyc:           { state: "36", place: "51000", name: "New York City" },
-  chicago:       { state: "17", place: "14000", name: "Chicago" },
-  sf:            { state: "06", place: "67000", name: "San Francisco" },
-  la:            { state: "06", place: "44000", name: "Los Angeles" },
-  seattle:       { state: "53", place: "63000", name: "Seattle" },
-  houston:       { state: "48", place: "35000", name: "Houston" },
-  phoenix:       { state: "04", place: "55000", name: "Phoenix" },
-  philadelphia:  { state: "42", place: "60000", name: "Philadelphia" },
-  san_antonio:   { state: "48", place: "65000", name: "San Antonio" },
-  san_diego:     { state: "06", place: "66000", name: "San Diego" },
-  dallas:        { state: "48", place: "19000", name: "Dallas" },
-  austin:        { state: "48", place: "05000", name: "Austin" },
-  denver:        { state: "08", place: "20000", name: "Denver" },
-  boston:         { state: "25", place: "07000", name: "Boston" },
-  nashville:     { state: "47", place: "52006", name: "Nashville" },
-  portland:      { state: "41", place: "59000", name: "Portland" },
-  baltimore:     { state: "24", place: "04000", name: "Baltimore" },
-  atlanta:       { state: "13", place: "04000", name: "Atlanta" },
-  miami:         { state: "12", place: "45000", name: "Miami" },
-  dc:            { state: "11", place: "50000", name: "Washington, D.C." },
-  minneapolis:   { state: "27", place: "43000", name: "Minneapolis" },
-  detroit:       { state: "26", place: "22000", name: "Detroit" },
-  pittsburgh:    { state: "42", place: "61000", name: "Pittsburgh" },
-  charlotte:     { state: "37", place: "12000", name: "Charlotte" },
-  columbus:      { state: "39", place: "18000", name: "Columbus" },
-  indianapolis:  { state: "18", place: "36003", name: "Indianapolis" },
-  memphis:       { state: "47", place: "48000", name: "Memphis" },
-  milwaukee:     { state: "55", place: "53000", name: "Milwaukee" },
-  jacksonville:  { state: "12", place: "35000", name: "Jacksonville" },
-  raleigh:       { state: "37", place: "55000", name: "Raleigh" },
+// Common aliases so users don't have to be precise
+const ALIASES: Record<string, string> = {
+  "nyc": "New York city",
+  "new york": "New York city",
+  "new york city": "New York city",
+  "manhattan": "New York city",
+  "sf": "San Francisco city",
+  "san fran": "San Francisco city",
+  "la": "Los Angeles city",
+  "l.a.": "Los Angeles city",
+  "dc": "Washington city",
+  "washington dc": "Washington city",
+  "d.c.": "Washington city",
+  "philly": "Philadelphia city",
+  "vegas": "Las Vegas city",
+  "nola": "New Orleans city",
 };
 
-// Aliases for fuzzy matching
-const CITY_ALIASES: Record<string, string> = {
-  "new york": "nyc", "new york city": "nyc", "manhattan": "nyc",
-  "san francisco": "sf", "san fran": "sf",
-  "los angeles": "la", "l.a.": "la",
-  "washington": "dc", "washington dc": "dc", "d.c.": "dc",
-  "philly": "philadelphia", "phila": "philadelphia",
-  "san_antonio": "san_antonio", "san antonio": "san_antonio",
-  "san_diego": "san_diego", "san diego": "san_diego",
+// State FIPS codes
+const STATE_FIPS: Record<string, string> = {
+  AL: "01", AK: "02", AZ: "04", AR: "05", CA: "06", CO: "08", CT: "09", DE: "10",
+  DC: "11", FL: "12", GA: "13", HI: "15", ID: "16", IL: "17", IN: "18", IA: "19",
+  KS: "20", KY: "21", LA: "22", ME: "23", MD: "24", MA: "25", MI: "26", MN: "27",
+  MS: "28", MO: "29", MT: "30", NE: "31", NV: "32", NH: "33", NJ: "34", NM: "35",
+  NY: "36", NC: "37", ND: "38", OH: "39", OK: "40", OR: "41", PA: "42", RI: "44",
+  SC: "45", SD: "46", TN: "47", TX: "48", UT: "49", VT: "50", VA: "51", WA: "53",
+  WV: "54", WI: "55", WY: "56",
+};
+
+const STATE_NAMES: Record<string, string> = {
+  "01": "Alabama", "02": "Alaska", "04": "Arizona", "05": "Arkansas", "06": "California",
+  "08": "Colorado", "09": "Connecticut", "10": "Delaware", "11": "District of Columbia",
+  "12": "Florida", "13": "Georgia", "15": "Hawaii", "16": "Idaho", "17": "Illinois",
+  "18": "Indiana", "19": "Iowa", "20": "Kansas", "21": "Kentucky", "22": "Louisiana",
+  "23": "Maine", "24": "Maryland", "25": "Massachusetts", "26": "Michigan", "27": "Minnesota",
+  "28": "Mississippi", "29": "Missouri", "30": "Montana", "31": "Nebraska", "32": "Nevada",
+  "33": "New Hampshire", "34": "New Jersey", "35": "New Mexico", "36": "New York",
+  "37": "North Carolina", "38": "North Dakota", "39": "Ohio", "40": "Oklahoma", "41": "Oregon",
+  "42": "Pennsylvania", "44": "Rhode Island", "45": "South Carolina", "46": "South Dakota",
+  "47": "Tennessee", "48": "Texas", "49": "Utah", "50": "Vermont", "51": "Virginia",
+  "53": "Washington", "54": "West Virginia", "55": "Wisconsin", "56": "Wyoming",
 };
 
 const BASE_URL = "https://api.census.gov/data";
-const ACS_YEAR = "2023"; // Most recent ACS 5-year
+const ACS_YEAR = "2023";
 const ACS_DATASET = "acs/acs5";
 
 export interface CensusResult {
   city: string;
   state: string;
+  stateFips: string;
+  placeFips: string;
   demographics: {
     population: number | null;
     medianAge: number | null;
@@ -119,87 +108,187 @@ export interface CensusResult {
   };
 }
 
+export interface CensusPlaceMatch {
+  name: string;       // e.g., "Denver city, Colorado"
+  stateFips: string;  // e.g., "08"
+  placeFips: string;  // e.g., "20000"
+  population: number;
+}
+
+// Cache the place search results to avoid repeated API calls
+const placeCache = new Map<string, CensusPlaceMatch[]>();
+
 /**
- * Resolve a city name to its FIPS codes.
+ * Search for a city/place in the Census API.
+ * Returns all matching places sorted by population (largest first).
  */
-export function resolveCensusFips(input: string): { key: string; fips: typeof CITY_FIPS[string] } | null {
-  const normalized = input.toLowerCase().trim();
-
-  // Direct key match
-  if (CITY_FIPS[normalized]) {
-    return { key: normalized, fips: CITY_FIPS[normalized] };
+export async function searchCensusPlaces(query: string): Promise<CensusPlaceMatch[]> {
+  const apiKey = process.env.CENSUS_API_KEY;
+  if (!apiKey) {
+    throw new Error("CENSUS_API_KEY not set.");
   }
 
-  // Alias match
-  const aliasKey = CITY_ALIASES[normalized];
-  if (aliasKey && CITY_FIPS[aliasKey]) {
-    return { key: aliasKey, fips: CITY_FIPS[aliasKey] };
+  // Check alias first
+  const normalized = query.toLowerCase().trim();
+  const aliased = ALIASES[normalized] || query;
+
+  // Check cache
+  const cacheKey = aliased.toLowerCase();
+  if (placeCache.has(cacheKey)) {
+    return placeCache.get(cacheKey)!;
   }
 
-  // Name match
-  for (const [key, fips] of Object.entries(CITY_FIPS)) {
-    if (fips.name.toLowerCase() === normalized) {
-      return { key, fips };
+  // Query Census for all places, filtering by name
+  // We fetch NAME + population for all places across all states
+  const url = `${BASE_URL}/${ACS_YEAR}/${ACS_DATASET}?get=NAME,B01003_001E&for=place:*&key=${apiKey}`;
+
+  console.error(`[city-data-mcp] Census place search for "${aliased}"`);
+
+  // We cache the full place list on first call — it's ~30K rows but only fetched once
+  if (!placeCache.has("__ALL__")) {
+    console.error(`[city-data-mcp] Fetching full place list from Census (one-time)...`);
+
+    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Census API error (${response.status}): ${errorText.slice(0, 200)}`);
     }
+
+    const data = (await response.json()) as string[][];
+    // data[0] = headers: ["NAME", "B01003_001E", "state", "place"]
+    // data[1+] = rows
+
+    const allPlaces: CensusPlaceMatch[] = [];
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      allPlaces.push({
+        name: row[0],
+        population: parseInt(row[1]) || 0,
+        stateFips: row[2],
+        placeFips: row[3],
+      });
+    }
+
+    placeCache.set("__ALL__", allPlaces);
+    console.error(`[city-data-mcp] Cached ${allPlaces.length} places`);
   }
 
-  return null;
+  const allPlaces = placeCache.get("__ALL__")!;
+
+  // Search: match by name (case-insensitive, partial match)
+  const searchTerm = aliased.toLowerCase();
+  const matches = allPlaces.filter((p) => {
+    const placeName = p.name.toLowerCase();
+    // Match the city part (before the comma)
+    const cityPart = placeName.split(",")[0].trim();
+    // Exact match on city name (without "city", "town", etc. suffix)
+    const baseName = cityPart.replace(/\s+(city|town|village|borough|cdp|municipality)$/i, "").trim();
+    return baseName === searchTerm || cityPart === searchTerm || cityPart.startsWith(searchTerm + " ");
+  });
+
+  // Sort by population descending — biggest city first
+  matches.sort((a, b) => b.population - a.population);
+
+  // Cache this search
+  placeCache.set(cacheKey, matches);
+
+  return matches;
 }
 
 /**
- * List all cities with Census data available.
+ * Resolve a city name to Census FIPS codes.
+ * Returns the best match (largest population) or null.
+ * Now works for ANY US city/town, not just a hardcoded list.
+ */
+export async function resolveCensusFips(input: string): Promise<{ key: string; fips: { state: string; place: string; name: string } } | null> {
+  const matches = await searchCensusPlaces(input);
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  // Return the largest match
+  const best = matches[0];
+  const stateName = STATE_NAMES[best.stateFips] || best.stateFips;
+
+  return {
+    key: `${best.stateFips}_${best.placeFips}`,
+    fips: {
+      state: best.stateFips,
+      place: best.placeFips,
+      name: best.name.split(",")[0].trim(), // Just the city name
+    },
+  };
+}
+
+/**
+ * List is no longer meaningful since we support all cities.
+ * Returns a note explaining dynamic search.
  */
 export function listCensusCities(): Array<{ key: string; name: string; state: string }> {
-  return Object.entries(CITY_FIPS).map(([key, fips]) => ({
-    key,
-    name: fips.name,
-    state: fips.state,
-  }));
+  return [{ key: "any", name: "Any US city, town, or CDP (~30,000 places)", state: "all" }];
 }
 
 /**
  * Fetch demographic data from the Census API for a city.
+ * Now accepts state + place FIPS directly.
  */
-export async function queryCensus(cityKey: string): Promise<CensusResult> {
-  const fips = CITY_FIPS[cityKey];
-  if (!fips) {
-    throw new Error(`Unknown city key: ${cityKey}`);
+export async function queryCensus(cityKeyOrState: string, placeFips?: string): Promise<CensusResult> {
+  let stateFips: string;
+  let place: string;
+  let cityName: string;
+
+  if (placeFips) {
+    // Direct FIPS provided
+    stateFips = cityKeyOrState;
+    place = placeFips;
+    cityName = `Place ${placeFips}`;
+  } else {
+    // Resolve from name
+    const match = await resolveCensusFips(cityKeyOrState);
+    if (!match) {
+      throw new Error(`City "${cityKeyOrState}" not found in Census data.`);
+    }
+    stateFips = match.fips.state;
+    place = match.fips.place;
+    cityName = match.fips.name;
   }
 
   const apiKey = process.env.CENSUS_API_KEY;
   if (!apiKey) {
-    throw new Error(
-      "CENSUS_API_KEY not set. Get a free key at https://api.census.gov/data/key_signup.html and set it as an environment variable."
-    );
+    throw new Error("CENSUS_API_KEY not set.");
   }
 
-  // Request all variables in one call
   const variableCodes = Object.values(VARIABLES).map((v) => v.code);
   const getParam = `NAME,${variableCodes.join(",")}`;
 
-  const url = `${BASE_URL}/${ACS_YEAR}/${ACS_DATASET}?get=${getParam}&for=place:${fips.place}&in=state:${fips.state}&key=${apiKey}`;
+  const url = `${BASE_URL}/${ACS_YEAR}/${ACS_DATASET}?get=${getParam}&for=place:${place}&in=state:${stateFips}&key=${apiKey}`;
 
   console.error(`[city-data-mcp] Census API: ${url.replace(apiKey, "***")}`);
 
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-  });
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
 
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Census API error (${response.status}): ${errorText.slice(0, 200)}`);
   }
 
-  // Census returns [[headers], [values]]
   const data = (await response.json()) as string[][];
   if (data.length < 2) {
-    throw new Error(`No Census data found for ${fips.name}`);
+    throw new Error(`No Census data found for ${cityName}`);
   }
 
   const headers = data[0];
   const values = data[1];
 
-  // Build a lookup: variable code → value
+  // Use NAME from response if available
+  const nameIdx = headers.indexOf("NAME");
+  if (nameIdx >= 0 && values[nameIdx]) {
+    const fullName = values[nameIdx];
+    cityName = fullName.split(",")[0].trim();
+  }
+
+  // Build lookup
   const lookup: Record<string, number | null> = {};
   for (const [varName, varDef] of Object.entries(VARIABLES)) {
     const idx = headers.indexOf(varDef.code);
@@ -211,7 +300,6 @@ export async function queryCensus(cityKey: string): Promise<CensusResult> {
     }
   }
 
-  // Compute derived rates
   const povertyRate = safeRate(lookup.povertyCount, lookup.totalForPoverty);
   const bachelorsDegreeRate = safeRate(lookup.bachelorsDegree, lookup.totalOver25);
   const vacancyRate = safeRate(lookup.vacantUnits, lookup.totalHousingUnits);
@@ -220,8 +308,10 @@ export async function queryCensus(cityKey: string): Promise<CensusResult> {
   const workFromHomeRate = safeRate(lookup.workFromHome, lookup.totalWorkers);
 
   return {
-    city: fips.name,
-    state: fips.state,
+    city: cityName,
+    state: STATE_NAMES[stateFips] || stateFips,
+    stateFips,
+    placeFips: place,
     demographics: {
       population: lookup.totalPopulation,
       medianAge: lookup.medianAge,
@@ -255,7 +345,7 @@ export function formatCensusResults(result: CensusResult): string {
     return n.toLocaleString();
   };
 
-  return `**${result.city}** — Census Demographics (ACS ${ACS_YEAR} 5-Year Estimates)
+  return `**${result.city}** (${result.state}) — Census Demographics (ACS ${ACS_YEAR} 5-Year Estimates)
 
 **Population & Demographics**
   - Population: ${fmt(result.demographics.population, "number")}
@@ -277,7 +367,6 @@ export function formatCensusResults(result: CensusResult): string {
   - Work From Home: ${fmt(result.commuting.workFromHomeRate, "percent")}`;
 }
 
-// Helper: safely compute a rate (numerator / denominator), returns null if either is null/zero
 function safeRate(numerator: number | null | undefined, denominator: number | null | undefined): number | null {
   if (numerator == null || denominator == null || denominator === 0) return null;
   return numerator / denominator;
