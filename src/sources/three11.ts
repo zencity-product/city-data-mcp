@@ -5,7 +5,8 @@
  * date_trunc_ym) to return trend analysis server-side: top complaint categories,
  * volume over time, and category breakdowns.
  *
- * Supported cities: NYC, Chicago, SF, LA, Seattle.
+ * Supported cities: NYC, Chicago, SF, LA, Seattle, Boston, Denver,
+ * Kansas City, Baltimore, Pittsburgh, Cincinnati, New Orleans, Austin.
  */
 
 import type { SocrataRow } from "../types.js";
@@ -56,6 +57,62 @@ const THREE11_CITIES: Record<string, Three11CityConfig> = {
     complaintField: "service_request_type",
     dateField: "open_datetime",
   },
+  boston: {
+    name: "Boston",
+    domain: "data.boston.gov",
+    dataset: "awu8-dc52",
+    complaintField: "type",
+    dateField: "open_dt",
+  },
+  denver: {
+    name: "Denver",
+    domain: "data.denvergov.org",
+    dataset: "v6vp-ncmk",
+    complaintField: "case_summary",
+    dateField: "case_created_dttm",
+  },
+  "kansas city": {
+    name: "Kansas City",
+    domain: "data.kcmo.org",
+    dataset: "7at3-sxhp",
+    complaintField: "request_type",
+    dateField: "creation_date",
+  },
+  baltimore: {
+    name: "Baltimore",
+    domain: "data.baltimorecity.gov",
+    dataset: "9agw-sxsr",
+    complaintField: "srtype",
+    dateField: "createddate",
+  },
+  pittsburgh: {
+    name: "Pittsburgh",
+    domain: "data.wprdc.org",
+    dataset: "f2bw-dgsn",
+    complaintField: "request_type",
+    dateField: "created_on",
+  },
+  cincinnati: {
+    name: "Cincinnati",
+    domain: "data.cincinnati-oh.gov",
+    dataset: "4cjh-bm8b",
+    complaintField: "service_name",
+    dateField: "requested_datetime",
+  },
+  "new orleans": {
+    name: "New Orleans",
+    domain: "data.nola.gov",
+    dataset: "3iz8-nghx",
+    complaintField: "type_",
+    dateField: "ticket_created_date_time",
+  },
+  austin: {
+    name: "Austin",
+    domain: "data.austintexas.gov",
+    dataset: "xwdj-i9he",
+    complaintField: "sr_type_desc",
+    dateField: "sr_created_date",
+  },
 };
 
 // Aliases so users can type "new york", "san francisco", etc.
@@ -66,6 +123,10 @@ const CITY_ALIASES: Record<string, string> = {
   "san francisco": "sf",
   "san fran": "sf",
   "los angeles": "la",
+  pgh: "pittsburgh",
+  kc: "kansas city",
+  nola: "new orleans",
+  cincy: "cincinnati",
 };
 
 // --- Public interface ---
