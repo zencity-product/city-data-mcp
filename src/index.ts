@@ -407,7 +407,7 @@ No additional API key needed — reuses the Census API key.`,
       }
 
       try {
-        const result = await queryFbiCrime(match.config.state);
+        const result = await queryFbiCrime(match.config.state, match.key);
         const formatted = formatFbiResults(result, match.config.name);
         return {
           content: [
