@@ -30,6 +30,11 @@ import { queryAirQuality, formatAirQualityResults } from "./sources/airnow.js";
 import { queryHud, formatHudResults } from "./sources/hud.js";
 import { queryWater, formatWaterResults } from "./sources/usgs.js";
 import { queryCivic, formatCivicResults } from "./sources/civic.js";
+import { query311Trends, format311Results, list311Cities } from "./sources/three11.js";
+import { queryTransit, formatTransitResults, listTransitCities } from "./sources/transit.js";
+import { querySchools, formatSchoolResults, listSchoolCities } from "./sources/schools.js";
+import { queryPermits, formatPermitResults, listPermitCities } from "./sources/permits.js";
+import { queryBudget, formatBudgetResults, listBudgetCities } from "./sources/budget.js";
 
 async function createMcpServer() {
   const server = new McpServer(
@@ -174,7 +179,7 @@ Use this to explore what's happening in a specific city.`,
         content: [
           {
             type: "text" as const,
-            text: `# Civic Data Hub — Available Data\n\n## Crime & 311 (Socrata)\n${cityList}\n\n## Demographics (US Census ACS)\n${censusList}\n\n## Economic Indicators (FRED)\n${fredCities.length} metros: ${fredList}\n\n## Employment (BLS)\n${blsCities.length} metros: ${blsCities.map((c) => c.name).join(", ")}\n\n## FBI Crime Statistics (UCR)\n${fbiCities.length} cities (state-level)\n\n## Weather (NWS)\nAny US location — current conditions, forecast, active alerts. No API key needed.\n\n## Air Quality (EPA AirNow)\n~45 major cities + any 5-digit ZIP code. Requires AIRNOW_API_KEY.\n\n## Housing (HUD)\n~35 major cities — Fair Market Rents, Area Median Income, income limits.\n\n## Water Data (USGS)\n~30 major cities — real-time streamflow, gage height, water temperature.\n\n## Representatives (Google Civic)\nAny US address — elected officials at federal, state, and local levels. Requires GOOGLE_CIVIC_API_KEY.\n\n## Tools\n- \`query_city_data\` — crime/311 data\n- \`query_demographics\` — Census data for ANY US city\n- \`compare_demographics\` — side-by-side Census comparison\n- \`query_economics\` — FRED economic indicators\n- \`query_employment\` — BLS employment & unemployment\n- \`query_national_crime\` — FBI UCR crime statistics\n- \`create_census_cohort\` — fast peer cities (demographics only, ~75 cities)\n- \`create_full_cohort\` — rich peer cities (Census+FRED+BLS+FBI, ~50 cities)\n- \`query_weather\` — NWS weather + alerts\n- \`query_air_quality\` — EPA AQI readings + forecast\n- \`query_housing\` — HUD fair market rents + income limits\n- \`query_water\` — USGS real-time water monitoring\n- \`query_representatives\` — elected officials lookup`,
+            text: `# Civic Data Hub — Available Data\n\n## Crime & 311 (Socrata)\n${cityList}\n\n## Demographics (US Census ACS)\n${censusList}\n\n## Economic Indicators (FRED)\n${fredCities.length} metros: ${fredList}\n\n## Employment (BLS)\n${blsCities.length} metros: ${blsCities.map((c) => c.name).join(", ")}\n\n## FBI Crime Statistics (UCR)\n${fbiCities.length} cities (state-level)\n\n## Weather (NWS)\nAny US location — current conditions, forecast, active alerts. No API key needed.\n\n## Air Quality (EPA AirNow)\n~45 major cities + any 5-digit ZIP code. Requires AIRNOW_API_KEY.\n\n## Housing (HUD)\n~35 major cities — Fair Market Rents, Area Median Income, income limits.\n\n## Water Data (USGS)\n~30 major cities — real-time streamflow, gage height, water temperature.\n\n## Representatives (Google Civic)\nAny US address — elected officials at federal, state, and local levels. Requires GOOGLE_CIVIC_API_KEY.\n\n## Tools\n- \`query_city_data\` — crime/311 data\n- \`query_demographics\` — Census data for ANY US city\n- \`compare_demographics\` — side-by-side Census comparison\n- \`query_economics\` — FRED economic indicators\n- \`query_employment\` — BLS employment & unemployment\n- \`query_national_crime\` — FBI UCR crime statistics\n- \`create_census_cohort\` — fast peer cities (demographics only, ~75 cities)\n- \`create_full_cohort\` — rich peer cities (Census+FRED+BLS+FBI, ~50 cities)\n- \`query_weather\` — NWS weather + alerts\n- \`query_air_quality\` — EPA AQI readings + forecast\n- \`query_housing\` — HUD fair market rents + income limits\n- \`query_water\` — USGS real-time water monitoring\n- \`query_representatives\` — elected officials lookup\n- \`query_311_trends\` — 311 complaint trends and top categories\n- \`query_transit\` — public transit ridership and performance (NTD)\n- \`query_schools\` — school district enrollment, finance, student-teacher ratios\n- \`query_permits\` — building permit trends (Census BPS, 5-year)\n- \`query_budget\` — city government budget breakdown`,
           },
         ],
       };
@@ -691,6 +696,119 @@ Use this for comprehensive benchmarking. Takes longer due to multi-source API ca
       try {
         const result = await queryCivic(args.address);
         return { content: [{ type: "text" as const, text: `# Representatives\n\n${formatCivicResults(result)}` }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    }
+  );
+
+  // --- Tool 14: query_311_trends ---
+  server.registerTool(
+    "query_311_trends",
+    {
+      title: "Query 311 Service Request Trends",
+      description: `Analyze 311 service request trends for a city. Returns top complaint categories, request volumes, and monthly trends. Uses server-side SoQL aggregation — fast and token-light.
+
+Available cities: ${list311Cities().join(", ")}.
+
+Great for understanding what residents are actually reporting: potholes, noise, graffiti, homeless encampments, etc.`,
+      inputSchema: z.object({
+        city: z.string().describe("City name (e.g., 'NYC', 'Chicago', 'SF')"),
+        days: z.number().min(7).max(365).default(90).describe("Lookback period in days (default 90)"),
+      }),
+    },
+    async (args) => {
+      try {
+        const result = await query311Trends(args.city, args.days as number);
+        return { content: [{ type: "text" as const, text: `# ${result.city} — 311 Trends\n\n${format311Results(result)}` }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    }
+  );
+
+  // --- Tool 15: query_transit ---
+  server.registerTool(
+    "query_transit",
+    {
+      title: "Query Public Transit Performance",
+      description: `Public transit ridership and service data from the National Transit Database (NTD). Shows ridership by agency and mode (bus, subway, light rail, commuter rail), service hours, and efficiency.
+
+${listTransitCities().length} cities available. No API key needed.`,
+      inputSchema: z.object({
+        city: z.string().describe("City name (e.g., 'NYC', 'Chicago', 'Denver')"),
+      }),
+    },
+    async (args) => {
+      try {
+        const result = await queryTransit(args.city);
+        return { content: [{ type: "text" as const, text: `# ${result.city} — Transit\n\n${formatTransitResults(result)}` }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    }
+  );
+
+  // --- Tool 16: query_schools ---
+  server.registerTool(
+    "query_schools",
+    {
+      title: "Query School District Data",
+      description: `School district data from the National Center for Education Statistics (NCES). Returns enrollment, number of schools, student-teacher ratios, and finance data (revenue breakdown, per-pupil spending).
+
+${listSchoolCities().length} cities available. No API key needed. Data is county-level from the CCD (Common Core of Data).`,
+      inputSchema: z.object({
+        city: z.string().describe("City name (e.g., 'Denver', 'Austin', 'NYC')"),
+      }),
+    },
+    async (args) => {
+      try {
+        const result = await querySchools(args.city);
+        return { content: [{ type: "text" as const, text: `# ${result.city} — Schools\n\n${formatSchoolResults(result)}` }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    }
+  );
+
+  // --- Tool 17: query_permits ---
+  server.registerTool(
+    "query_permits",
+    {
+      title: "Query Building Permits",
+      description: `Building permit trends from the Census Bureau's Building Permits Survey. Shows 5-year trend (2020-2024) of permits and housing units authorized at the county level.
+
+${listPermitCities().length} cities available. Rising permits = development activity; declining = slowdown.`,
+      inputSchema: z.object({
+        city: z.string().describe("City name (e.g., 'Austin', 'Phoenix', 'Seattle')"),
+      }),
+    },
+    async (args) => {
+      try {
+        const result = await queryPermits(args.city);
+        return { content: [{ type: "text" as const, text: `# ${result.city} — Building Permits\n\n${formatPermitResults(result)}` }] };
+      } catch (error) {
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
+      }
+    }
+  );
+
+  // --- Tool 18: query_budget ---
+  server.registerTool(
+    "query_budget",
+    {
+      title: "Query City Budget",
+      description: `City government budget breakdown from published municipal budgets. Shows total budget, per-capita spending, and spending by category (police, fire, education, infrastructure, etc.).
+
+${listBudgetCities().length} major cities available. Great for understanding city priorities — where money goes vs. what residents care about.`,
+      inputSchema: z.object({
+        city: z.string().describe("City name (e.g., 'NYC', 'Denver', 'SF')"),
+      }),
+    },
+    async (args) => {
+      try {
+        const result = await queryBudget(args.city);
+        return { content: [{ type: "text" as const, text: `# ${result.city} — City Budget\n\n${formatBudgetResults(result)}` }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
