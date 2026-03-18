@@ -901,15 +901,14 @@ Returns a directional dashboard: each metric tagged as improving, declining, or 
  * - --http flag or PORT env var: HTTP mode — for remote deployment (Vercel, Railway, etc.)
  */
 async function main() {
-  const server = await createMcpServer();
   const useHttp = process.argv.includes("--http") || !!process.env.PORT;
 
   if (useHttp) {
     // HTTP mode: Streamable HTTP transport for remote access
     const port = parseInt(process.env.PORT || "3000", 10);
 
-    // Store transports by session ID for stateful connections
-    const transports = new Map<string, StreamableHTTPServerTransport>();
+    // Store transports + servers by session ID for stateful connections
+    const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
 
     const httpServer = createServer(async (req, res) => {
       // CORS headers for remote access
@@ -937,35 +936,39 @@ async function main() {
 
         if (req.method === "POST") {
           // Check for existing session
-          let transport = sessionId ? transports.get(sessionId) : undefined;
+          let session = sessionId ? sessions.get(sessionId) : undefined;
 
-          if (!transport) {
-            // New session — create transport and connect
-            transport = new StreamableHTTPServerTransport({
+          if (!session) {
+            // New session — create a fresh server + transport pair
+            const sessionServer = await createMcpServer();
+            const transport = new StreamableHTTPServerTransport({
               sessionIdGenerator: () => crypto.randomUUID(),
             });
 
             transport.onclose = () => {
               const sid = (transport as any).sessionId;
-              if (sid) transports.delete(sid);
+              if (sid) sessions.delete(sid);
             };
 
-            await server.connect(transport);
+            await sessionServer.connect(transport);
 
             // Store by session ID after connection
             const newSessionId = (transport as any).sessionId;
-            if (newSessionId) transports.set(newSessionId, transport);
+            if (newSessionId) {
+              session = { transport, server: sessionServer };
+              sessions.set(newSessionId, session);
+            }
           }
 
-          await transport.handleRequest(req, res);
+          await session!.transport.handleRequest(req, res);
           return;
         }
 
         if (req.method === "GET") {
           // SSE stream for server-initiated messages
-          const transport = sessionId ? transports.get(sessionId) : undefined;
-          if (transport) {
-            await transport.handleRequest(req, res);
+          const session = sessionId ? sessions.get(sessionId) : undefined;
+          if (session) {
+            await session.transport.handleRequest(req, res);
             return;
           }
           res.writeHead(400, { "Content-Type": "application/json" });
@@ -975,10 +978,10 @@ async function main() {
 
         if (req.method === "DELETE") {
           // Close session
-          const transport = sessionId ? transports.get(sessionId) : undefined;
-          if (transport) {
-            await transport.handleRequest(req, res);
-            transports.delete(sessionId!);
+          const session = sessionId ? sessions.get(sessionId) : undefined;
+          if (session) {
+            await session.transport.handleRequest(req, res);
+            sessions.delete(sessionId!);
             return;
           }
           res.writeHead(404);
@@ -998,6 +1001,7 @@ async function main() {
     });
   } else {
     // Stdio mode: for Claude Code / Claude Desktop (local)
+    const server = await createMcpServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("[city-data-mcp] Server started in stdio mode, waiting for requests...");
