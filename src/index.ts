@@ -15,7 +15,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createServer } from "node:http";
+import express from "express";
+import cors from "cors";
 import { z } from "zod";
 import { resolveCity, listCities } from "./cities.js";
 import { querySocrata, formatSocrataResults } from "./sources/socrata.js";
@@ -921,6 +922,99 @@ Returns a directional dashboard: each metric tagged as improving, declining, or 
   return server;
 }
 
+// ── REST API helpers ────────────────────────────────────────────────────────
+
+/** Extract :city param safely (Express v5 params can be string | string[]) */
+function cityParam(req: express.Request): string {
+  const raw = req.params.city;
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+function safeHandler(fn: (city: string, req: express.Request) => Promise<unknown>) {
+  return async (req: express.Request, res: express.Response) => {
+    try {
+      const city = cityParam(req);
+      const data = await fn(city, req);
+      res.json({ data });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: message });
+    }
+  };
+}
+
+/** Create Express router with all REST API endpoints for the dashboard UI */
+function createApiRouter(): express.Router {
+  const router = express.Router();
+
+  // City list
+  router.get("/cities", (_req, res) => {
+    const citySet = new Set<string>();
+    for (const c of listCities()) citySet.add(c.name);
+    for (const c of listFredCities()) citySet.add(c.name);
+    for (const c of listBlsCities()) citySet.add(c.name);
+    for (const c of listFbiCities()) citySet.add(c.name);
+    for (const c of list311Cities()) citySet.add(c.name);
+    for (const c of listTransitCities()) citySet.add(c.name);
+    for (const c of listSchoolCities()) citySet.add(c.name);
+    for (const c of listPermitCities()) citySet.add(c.name);
+    for (const c of listBudgetCities()) citySet.add(c.name);
+    for (const c of listTrafficCities()) citySet.add(c.name);
+    const majorCities = [
+      "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
+      "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose",
+      "Austin", "Jacksonville", "Columbus", "Indianapolis",
+      "Charlotte", "San Francisco", "Seattle", "Denver", "Nashville",
+      "Oklahoma City", "Boston", "Portland", "Las Vegas", "Memphis",
+      "Louisville", "Baltimore", "Milwaukee", "Albuquerque", "Tucson",
+      "Fresno", "Sacramento", "Kansas City", "Atlanta", "Omaha",
+      "Raleigh", "Virginia Beach", "Miami", "Minneapolis",
+      "Tampa", "New Orleans", "Cleveland", "Pittsburgh",
+      "St. Louis", "Cincinnati", "Orlando", "Salt Lake City",
+      "Richmond", "Birmingham", "Buffalo", "Boise",
+      "Honolulu", "Anchorage", "Madison", "Des Moines",
+    ];
+    for (const c of majorCities) citySet.add(c);
+    res.json({ data: Array.from(citySet).sort() });
+  });
+
+  // Data endpoints
+  router.get("/census/:city", safeHandler(async (city) => queryCensus(city)));
+  router.get("/economics/:city", safeHandler(async (city) => {
+    const match = resolveFredCity(city);
+    if (!match) throw new Error(`City "${city}" not found in FRED data`);
+    return queryFred(match.key);
+  }));
+  router.get("/employment/:city", safeHandler(async (city) => {
+    const match = resolveBlsCity(city);
+    if (!match) throw new Error(`City "${city}" not found in BLS data`);
+    return queryBls(match.key);
+  }));
+  router.get("/crime/:city", safeHandler(async (city) => {
+    const match = await resolveFbiCityAsync(city);
+    if (!match) throw new Error(`City "${city}" not found in FBI data`);
+    return queryFbiCrime(match.config.state, match.key);
+  }));
+  router.get("/traffic/:city", safeHandler(async (city) => queryTraffic(city)));
+  router.get("/weather/:city", safeHandler(async (city) => queryWeather(city)));
+  router.get("/housing/:city", safeHandler(async (city) => queryHud(city)));
+  router.get("/air-quality/:city", safeHandler(async (city) => queryAirQuality(city)));
+  router.get("/water/:city", safeHandler(async (city) => queryWater(city)));
+  router.get("/representatives/:city", safeHandler(async (city) => queryCivic(city)));
+  router.get("/311/:city", safeHandler(async (city, req) => {
+    const days = parseInt(req.query.days as string) || 90;
+    return query311Trends(city, days);
+  }));
+  router.get("/transit/:city", safeHandler(async (city) => queryTransit(city)));
+  router.get("/schools/:city", safeHandler(async (city) => querySchools(city)));
+  router.get("/permits/:city", safeHandler(async (city) => queryPermits(city)));
+  router.get("/budget/:city", safeHandler(async (city) => queryBudget(city)));
+  router.get("/briefing/:city", safeHandler(async (city) => buildCityBriefing(city)));
+  router.get("/changes/:city", safeHandler(async (city) => trackCityChanges(city)));
+
+  return router;
+}
+
 /**
  * Start the server in the appropriate transport mode.
  *
@@ -931,103 +1025,83 @@ async function main() {
   const useHttp = process.argv.includes("--http") || !!process.env.PORT;
 
   if (useHttp) {
-    // HTTP mode: Streamable HTTP transport for remote access
+    // HTTP mode: Express serves both MCP + REST API
     const port = parseInt(process.env.PORT || "3000", 10);
+    const app = express();
+    app.use(cors({ origin: true }));
 
-    // Store transports + servers by session ID for stateful connections
-    const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
-
-    const httpServer = createServer(async (req, res) => {
-      // CORS headers for remote access
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, mcp-session-id");
-      res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
-
-      if (req.method === "OPTIONS") {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-
-      // Health check
-      if (req.url === "/health") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok", server: "city-data-mcp", version: "0.2.0" }));
-        return;
-      }
-
-      // MCP endpoint
-      if (req.url === "/mcp") {
-        const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-        if (req.method === "POST") {
-          // Check for existing session
-          let session = sessionId ? sessions.get(sessionId) : undefined;
-
-          if (!session) {
-            // New session — create a fresh server + transport pair
-            const sessionServer = await createMcpServer();
-            const transport = new StreamableHTTPServerTransport({
-              sessionIdGenerator: () => crypto.randomUUID(),
-            });
-
-            transport.onclose = () => {
-              const sid = (transport as any).sessionId;
-              if (sid) sessions.delete(sid);
-            };
-
-            await sessionServer.connect(transport);
-            session = { transport, server: sessionServer };
-
-            // Handle the request first — this is what assigns the session ID
-            await transport.handleRequest(req, res);
-
-            // Now store by the assigned session ID
-            const assignedId = (transport as any).sessionId;
-            if (assignedId) {
-              sessions.set(assignedId, session);
-            }
-            return;
-          }
-
-          await session.transport.handleRequest(req, res);
-          return;
-        }
-
-        if (req.method === "GET") {
-          // SSE stream for server-initiated messages
-          const session = sessionId ? sessions.get(sessionId) : undefined;
-          if (session) {
-            await session.transport.handleRequest(req, res);
-            return;
-          }
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "No session found. Send a POST first." }));
-          return;
-        }
-
-        if (req.method === "DELETE") {
-          // Close session
-          const session = sessionId ? sessions.get(sessionId) : undefined;
-          if (session) {
-            await session.transport.handleRequest(req, res);
-            sessions.delete(sessionId!);
-            return;
-          }
-          res.writeHead(404);
-          res.end();
-          return;
-        }
-      }
-
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Not found. Use /mcp for MCP protocol or /health for status." }));
+    // Health check
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok", server: "city-data-mcp", version: "0.2.0" });
     });
 
-    httpServer.listen(port, () => {
+    // ── REST API for Dashboard UI ───────────────────────────────────────
+    app.use("/api", createApiRouter());
+
+    // ── MCP Protocol Endpoint ───────────────────────────────────────────
+    // Per-session MCP server + transport pairs (upstream pattern)
+    const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+
+    // MCP POST — tool calls & initialization
+    app.post("/mcp", async (req, res) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      let session = sessionId ? sessions.get(sessionId) : undefined;
+
+      if (!session) {
+        // New session — create a fresh server + transport pair
+        const sessionServer = await createMcpServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => crypto.randomUUID(),
+        });
+        transport.onclose = () => {
+          const sid = (transport as any).sessionId;
+          if (sid) sessions.delete(sid);
+        };
+        await sessionServer.connect(transport);
+        session = { transport, server: sessionServer };
+
+        // Handle request first — assigns session ID
+        await transport.handleRequest(req, res);
+        const assignedId = (transport as any).sessionId;
+        if (assignedId) sessions.set(assignedId, session);
+        return;
+      }
+
+      await session.transport.handleRequest(req, res);
+    });
+
+    // MCP GET — SSE stream for server-initiated messages
+    app.get("/mcp", async (req, res) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      const session = sessionId ? sessions.get(sessionId) : undefined;
+      if (session) {
+        await session.transport.handleRequest(req, res);
+        return;
+      }
+      res.status(400).json({ error: "No session found. Send a POST first." });
+    });
+
+    // MCP DELETE — close session
+    app.delete("/mcp", async (req, res) => {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      const session = sessionId ? sessions.get(sessionId) : undefined;
+      if (session) {
+        await session.transport.handleRequest(req, res);
+        sessions.delete(sessionId!);
+        return;
+      }
+      res.status(404).end();
+    });
+
+    // 404 fallback
+    app.use((_req, res) => {
+      res.status(404).json({ error: "Not found. Use /mcp for MCP, /api for REST, or /health for status." });
+    });
+
+    app.listen(port, () => {
       console.error(`[city-data-mcp] HTTP server running on port ${port}`);
       console.error(`[city-data-mcp] MCP endpoint: http://localhost:${port}/mcp`);
+      console.error(`[city-data-mcp] REST API:     http://localhost:${port}/api/cities`);
       console.error(`[city-data-mcp] Health check: http://localhost:${port}/health`);
     });
   } else {
