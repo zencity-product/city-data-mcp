@@ -18,6 +18,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express from "express";
 import cors from "cors";
 import { z } from "zod";
+import type { Country } from "./types.js";
 import { resolveCity, listCities } from "./cities.js";
 import { querySocrata, formatSocrataResults } from "./sources/socrata.js";
 import { queryCensus, formatCensusResults } from "./sources/census.js";
@@ -40,6 +41,25 @@ import { buildCityBriefing, formatBriefing } from "./sources/briefing.js";
 import { queryTraffic, formatTrafficResults, listTrafficCities } from "./sources/traffic.js";
 import { mapIssueData, formatIssueData, listIssueTopics } from "./sources/issue-mapper.js";
 import { trackCityChanges, formatChangeTracker } from "./sources/change-tracker.js";
+// Multi-country adapters
+import { queryDemographics as adapterDemographics } from "./sources/adapters/demographics.js";
+import { queryCrime as adapterCrime } from "./sources/adapters/crime.js";
+import { queryEconomics as adapterEconomics } from "./sources/adapters/economics.js";
+import { queryEmployment as adapterEmployment } from "./sources/adapters/employment.js";
+import { queryWeather as adapterWeather } from "./sources/adapters/weather.js";
+import { queryAirQuality as adapterAirQuality } from "./sources/adapters/air-quality.js";
+import { queryHousing as adapterHousing } from "./sources/adapters/housing.js";
+import { queryWater as adapterWater } from "./sources/adapters/water.js";
+import { queryRepresentatives as adapterRepresentatives } from "./sources/adapters/representatives.js";
+import { querySchools as adapterSchools } from "./sources/adapters/schools.js";
+import { queryTransport as adapterTransport } from "./sources/adapters/transport.js";
+import { queryBudget as adapterBudget } from "./sources/adapters/budget.js";
+import { queryBriefing as adapterBriefing } from "./sources/adapters/briefing.js";
+
+// Country parameter schema (reused across tools)
+const countryParam = z.enum(['US', 'UK', 'CA']).optional().describe(
+  "Country code. Auto-detected from city name if omitted. Required for ambiguous cities like London, Birmingham, Richmond, Hamilton, Cambridge, Windsor."
+);
 
 async function createMcpServer() {
   const server = new McpServer(
@@ -64,13 +84,12 @@ async function createMcpServer() {
     "query_city_data",
     {
       title: "Query City Public Data",
-      description: `Query publicly available data for a US city by category.
+      description: `Query publicly available data for a US city by category. US only (Socrata open data portals).
 
 Supported cities: NYC, Chicago, San Francisco, Los Angeles, Seattle
 Supported categories: crime, 311
 
-Returns recent data with category breakdown and sample records.
-Use this to explore what's happening in a specific city.`,
+Returns recent data with category breakdown and sample records.`,
       inputSchema: z.object({
         city: z
           .string()
@@ -184,7 +203,39 @@ Use this to explore what's happening in a specific city.`,
         content: [
           {
             type: "text" as const,
-            text: `# Civic Data Hub — Available Data\n\n## Crime & 311 (Socrata)\n${cityList}\n\n## Demographics (US Census ACS)\n${censusList}\n\n## Economic Indicators (FRED)\n${fredCities.length} metros: ${fredList}\n\n## Employment (BLS)\n${blsCities.length} metros: ${blsCities.map((c) => c.name).join(", ")}\n\n## FBI Crime Statistics (UCR)\n${fbiCities.length} cities (state-level)\n\n## Weather (NWS)\nAny US location — current conditions, forecast, active alerts. No API key needed.\n\n## Air Quality (EPA AirNow)\n~45 major cities + any 5-digit ZIP code. Requires AIRNOW_API_KEY.\n\n## Housing (HUD)\n~35 major cities — Fair Market Rents, Area Median Income, income limits.\n\n## Water Data (USGS)\n~30 major cities — real-time streamflow, gage height, water temperature.\n\n## Representatives (Google Civic)\nAny US address — elected officials at federal, state, and local levels. Requires GOOGLE_CIVIC_API_KEY.\n\n## Traffic Safety (NHTSA FARS)\nAny US city — fatal crash data, pedestrian/cyclist breakdowns, alcohol-related stats. County-level primary with state context. TTI congestion data for ${listTrafficCities().length} metros. No API key needed.\n\n## Tools\n- \`query_city_data\` — crime/311 data\n- \`query_demographics\` — Census data for ANY US city\n- \`compare_demographics\` — side-by-side Census comparison\n- \`query_economics\` — FRED economic indicators\n- \`query_employment\` — BLS employment & unemployment\n- \`query_national_crime\` — FBI UCR crime statistics\n- \`create_census_cohort\` — fast peer cities (demographics only, ~75 cities)\n- \`create_full_cohort\` — rich peer cities (Census+FRED+BLS+FBI, ~50 cities)\n- \`query_weather\` — NWS weather + alerts\n- \`query_air_quality\` — EPA AQI readings + forecast\n- \`query_housing\` — HUD fair market rents + income limits\n- \`query_water\` — USGS real-time water monitoring\n- \`query_representatives\` — elected officials lookup\n- \`query_311_trends\` — 311 complaint trends and top categories\n- \`query_transit\` — public transit ridership and performance (NTD)\n- \`query_schools\` — school district enrollment, finance, student-teacher ratios\n- \`query_permits\` — building permit trends (Census BPS, 5-year)\n- \`query_budget\` — city government budget breakdown\n- \`query_traffic\` — traffic safety (NHTSA FARS) + congestion (TTI)\n- \`create_city_briefing\` — comprehensive city profile from ALL sources\n- \`map_issue_data\` — cross-reference community issues with hard data\n- \`track_city_changes\` — directional dashboard of what's improving/declining`,
+            text: `# Civic Data Hub — Available Data
+
+## Supported Countries: US, UK, Canada
+
+Most tools now support all three countries. Pass \`country: "US"\`, \`"UK"\`, or \`"CA"\` — or let it auto-detect from the city name. Ambiguous cities (London, Birmingham, Richmond, Hamilton, etc.) require the country parameter.
+
+## Multi-Country Tools
+| Tool | US Source | UK Source | CA Source |
+| --- | --- | --- | --- |
+| \`query_demographics\` | Census ACS (~30K places) | ONS/Nomis Census 2021 | StatCan Census Profile |
+| \`query_economics\` | FRED (20 metros) | ONS Beta API | StatCan WDS |
+| \`query_employment\` | BLS (20 metros) | ONS/Nomis | StatCan LFS (13 CMAs) |
+| \`query_national_crime\` | FBI UCR (state-level) | data.police.uk (street-level) | StatCan CSI (13 CMAs) |
+| \`query_weather\` | NWS (any city) | Met Office (METOFFICE_API_KEY) | MSC GeoMet |
+| \`query_air_quality\` | EPA AirNow (AIRNOW_API_KEY) | DEFRA UK-AIR (DAQI 1-10) | MSC AQHI (1-10) |
+| \`query_housing\` | HUD (~35 cities) | ONS/Land Registry | StatCan/CREA (12 CMAs) |
+| \`query_water\` | USGS (~30 cities) | Environment Agency | MSC Hydrometric |
+| \`query_representatives\` | Google Civic (CIVIC_KEY) | TheyWorkForYou (TWFY_KEY) | Represent (no key) |
+| \`query_schools\` | NCES (${listSchoolCities().length} cities) | DfE GIAS | Not yet |
+| \`query_transit\` | NTD (${listTransitCities().length} cities) | DfT (8 cities) | Not yet |
+| \`query_budget\` | Municipal budgets (${listBudgetCities().length}) | Local authority (11 cities) | Not yet |
+| \`create_city_briefing\` | 14 sources | 11 sources | 9 sources |
+
+## US-Only Tools
+- \`query_city_data\` — Socrata crime/311 data (NYC, Chicago, SF, LA, Seattle)
+- \`query_311_trends\` — 311 complaint trends (${list311Cities().join(", ")})
+- \`compare_demographics\` — side-by-side Census comparison
+- \`create_census_cohort\` — fast peer cities (~75 cities)
+- \`create_full_cohort\` — rich multi-source peer cities (~50 cities)
+- \`query_permits\` — building permit trends (${listPermitCities().length} cities)
+- \`query_traffic\` — traffic safety + congestion (${listTrafficCities().length} metros)
+- \`map_issue_data\` — cross-reference community issues with data
+- \`track_city_changes\` — directional dashboard of city trends`,
           },
         ],
       };
@@ -192,43 +243,29 @@ Use this to explore what's happening in a specific city.`,
   );
 
   // --- Tool 3: query_demographics ---
-  // Census demographic data for any major US city.
+  // Demographic data — US, UK, or Canada.
   server.registerTool(
     "query_demographics",
     {
       title: "Query City Demographics",
-      description: `Query US Census demographic data for ANY US city, town, or CDP (~30,000 places). Returns population, income, poverty rate, education, housing costs, and commuting patterns.
+      description: `Query demographic data for a city in the US, UK, or Canada.
 
-Data from American Community Survey (ACS) 5-Year Estimates. Not limited to major cities — works for Boise, Chapel Hill, Juneau, or any incorporated place.`,
+US: Census ACS — population, income, poverty, education, housing, commuting (~30,000 places).
+UK: ONS/Nomis — population, households, age distribution.
+CA: StatCan Census Profile — population, income, households, immigration.
+
+Country is auto-detected or specify with the country parameter. Required for ambiguous cities (London, Birmingham, etc.).`,
       inputSchema: z.object({
-        city: z
-          .string()
-          .describe(
-            "City name (e.g., 'Denver', 'NYC', 'San Francisco', 'DC')"
-          ),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryCensus(args.city);
-        const formatted = formatCensusResults(result);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `# ${result.city} — Demographics\n\n${formatted}`,
-            },
-          ],
-        };
+        const result = await adapterDemographics(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error fetching Census data: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
@@ -332,168 +369,85 @@ Data from American Community Survey (ACS) 5-Year Estimates. Not limited to major
   );
 
   // --- Tool 5: query_economics ---
-  // FRED economic data for metro areas.
+  // Economic data — US FRED, UK ONS, or StatCan.
   server.registerTool(
     "query_economics",
     {
       title: "Query City Economic Data",
-      description: `Query economic indicators for a US metro area from FRED (Federal Reserve Economic Data).
+      description: `Query economic indicators for a city in the US, UK, or Canada.
 
-Returns unemployment rate (local + national for comparison), total employment, housing price index, and per capita personal income — with trends.
+US: FRED — unemployment, employment, housing price index, per capita income (20 major metros).
+UK: ONS — CPI, GDP, regional GVA, unemployment.
+CA: StatCan — CPI, GDP, retail trade (national/provincial).
 
-Covers 20 major US metros. Data freshness varies: unemployment is monthly, housing quarterly, income annual.`,
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z
-          .string()
-          .describe("City name (e.g., 'Denver', 'NYC', 'Austin')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
-      const match = resolveFredCity(args.city);
-      if (!match) {
-        const available = listFredCities().map((c) => c.name).join(", ");
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `City "${args.city}" not found in FRED data. Available cities: ${available}`,
-            },
-          ],
-        };
-      }
-
       try {
-        const result = await queryFred(match.key);
-        const formatted = formatFredResults(result);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `# ${result.city} — Economic Indicators\n\n${formatted}`,
-            },
-          ],
-        };
+        const result = await adapterEconomics(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error fetching FRED data for ${match.config.name}: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
 
   // --- Tool 6: query_national_crime ---
-  // FBI UCR state-level crime data.
+  // Crime data — US FBI, UK Police, or StatCan UCR.
   server.registerTool(
     "query_national_crime",
     {
-      title: "Query FBI Crime Statistics",
-      description: `Query FBI Uniform Crime Report (UCR) data for a US state. Returns violent crime, property crime, homicide, robbery, assault, burglary, and motor vehicle theft — with counts, rates per 100K, and multi-year trends.
+      title: "Query Crime Statistics",
+      description: `Query crime data for a city in the US, UK, or Canada.
 
-Note: This is STATE-level data (not city-level). Data lags 1-2 years. Use for understanding broad crime trends and comparing states.
+US: FBI UCR — state-level violent/property crime, homicide, robbery, assault, multi-year trends.
+UK: data.police.uk — street-level crime by category (anti-social behaviour, burglary, robbery, violence, etc.).
+CA: StatCan UCR — Crime Severity Index, violent/non-violent CSI, homicide rate (CMA level).
 
-No additional API key needed — reuses the Census API key.`,
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z
-          .string()
-          .describe("City name or state abbreviation (e.g., 'Denver', 'NYC', 'CA', 'TX'). City names resolve to their state."),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
-      const match = await resolveFbiCityAsync(args.city);
-      if (!match) {
-        const available = listFbiCities().map((c) => `${c.name} (${c.state})`).join(", ");
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `City/state "${args.city}" not found. Could not geo-resolve to a US state. Try a more specific name (e.g., "Springfield, IL") or a state abbreviation (e.g., "TX").`,
-            },
-          ],
-        };
-      }
-
       try {
-        const result = await queryFbiCrime(match.config.state, match.key);
-        const formatted = formatFbiResults(result, match.config.name);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `# ${match.config.name} — FBI Crime Data\n\n${formatted}`,
-            },
-          ],
-        };
+        const result = await adapterCrime(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error fetching FBI data: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
 
   // --- Tool 7: query_employment ---
-  // BLS metro employment data.
+  // Employment data — US BLS, UK ONS, or StatCan LFS.
   server.registerTool(
     "query_employment",
     {
       title: "Query City Employment Data",
-      description: `Query employment statistics for a US metro area from the Bureau of Labor Statistics (BLS).
+      description: `Query employment statistics for a city in the US, UK, or Canada.
 
-Returns metro-level unemployment rate (with 6-month trend), total employment, labor force size, and year-over-year changes.
+US: BLS — metro unemployment rate, total employment, labor force (20 major metros).
+UK: ONS/Nomis — regional unemployment rate.
+CA: StatCan LFS — unemployment, employment, participation rates (13 CMAs).
 
-Covers 20 major US metros. Data is monthly, typically 1-2 months lag.
-
-No additional API key needed (uses BLS public API). Rate-limited to 25 queries/day without key.`,
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z
-          .string()
-          .describe("City name (e.g., 'Denver', 'NYC', 'Austin')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
-      const match = resolveBlsCity(args.city);
-      if (!match) {
-        const available = listBlsCities().map((c) => c.name).join(", ");
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `City "${args.city}" not found in BLS data. Available cities: ${available}`,
-            },
-          ],
-        };
-      }
-
       try {
-        const result = await queryBls(match.key);
-        const formatted = formatBlsResults(result);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `# ${result.city} — Employment Data\n\n${formatted}`,
-            },
-          ],
-        };
+        const result = await adapterEmployment(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error fetching BLS data for ${match.config.name}: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
+        return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
@@ -612,15 +566,22 @@ Use this for comprehensive benchmarking. Takes longer due to multi-source API ca
     "query_weather",
     {
       title: "Query City Weather",
-      description: `Get current weather conditions, 3-day forecast, and active alerts for any US city. Real-time data from the National Weather Service. No API key needed.`,
+      description: `Get current weather conditions and forecast for a city in the US, UK, or Canada.
+
+US: National Weather Service — conditions, forecast, alerts. No API key needed.
+UK: Met Office DataHub — hourly forecast. Requires METOFFICE_API_KEY.
+CA: MSC GeoMet — current conditions and forecast. No API key needed.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'Denver', 'Boise', 'NYC')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryWeather(args.city);
-        return { content: [{ type: "text" as const, text: `# ${args.city} — Weather\n\n${formatWeatherResults(result)}` }] };
+        const result = await adapterWeather(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
@@ -632,15 +593,22 @@ Use this for comprehensive benchmarking. Takes longer due to multi-source API ca
     "query_air_quality",
     {
       title: "Query Air Quality",
-      description: `Get current Air Quality Index (AQI) and forecast for a US city. Shows readings for O3, PM2.5, PM10 with color-coded categories. Data from EPA AirNow. Requires AIRNOW_API_KEY.`,
+      description: `Get air quality data for a city in the US, UK, or Canada.
+
+US: EPA AirNow — AQI (0-500 scale). Requires AIRNOW_API_KEY.
+UK: DEFRA UK-AIR — DAQI (1-10 scale). No API key needed.
+CA: MSC — AQHI (1-10+ scale). No API key needed.
+
+Note: Each country uses a different scale. Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name or 5-digit ZIP code"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryAirQuality(args.city);
-        return { content: [{ type: "text" as const, text: `# ${result.city} — Air Quality\n\n${formatAirQualityResults(result)}` }] };
+        const result = await adapterAirQuality(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
@@ -651,16 +619,23 @@ Use this for comprehensive benchmarking. Takes longer due to multi-source API ca
   server.registerTool(
     "query_housing",
     {
-      title: "Query HUD Housing Data",
-      description: `Get HUD Fair Market Rents and income limits for a US city. Shows rent by bedroom count, area median income, and income thresholds for housing programs. No API key needed.`,
+      title: "Query Housing Data",
+      description: `Get housing data for a city in the US, UK, or Canada.
+
+US: HUD — Fair Market Rents, area median income, income limits. No API key needed.
+UK: ONS/Land Registry — house prices, annual change. No API key needed.
+CA: StatCan/CREA — average/median price, price change, housing starts.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'Denver', 'NYC', 'Boise')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryHud(args.city);
-        return { content: [{ type: "text" as const, text: `# ${result.city} — Housing\n\n${formatHudResults(result)}` }] };
+        const result = await adapterHousing(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
@@ -672,15 +647,22 @@ Use this for comprehensive benchmarking. Takes longer due to multi-source API ca
     "query_water",
     {
       title: "Query Water Conditions",
-      description: `Get real-time water data from USGS monitoring sites near a US city. Shows streamflow, gage height, and water temperature from nearby rivers and streams. Data updates every 15 minutes. No API key needed.`,
+      description: `Get real-time water monitoring data for a city in the US, UK, or Canada.
+
+US: USGS — streamflow, gage height, water temperature. No API key needed.
+UK: Environment Agency — water levels, flow rates, flood warnings (England only). No API key needed.
+CA: MSC Hydrometric — water levels, discharge. No API key needed.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'Denver', 'Portland', 'Austin')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryWater(args.city);
-        return { content: [{ type: "text" as const, text: `# ${args.city} — Water Conditions\n\n${formatWaterResults(result)}` }] };
+        const result = await adapterWater(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
@@ -692,27 +674,34 @@ Use this for comprehensive benchmarking. Takes longer due to multi-source API ca
     "query_representatives",
     {
       title: "Query Elected Representatives",
-      description: `Look up elected officials at all levels (federal, state, local) for any US address or city. Shows name, party, office, and contact info. Requires GOOGLE_CIVIC_API_KEY.`,
+      description: `Look up elected officials for a city in the US, UK, or Canada.
+
+US: Google Civic — federal, state, local officials. Requires GOOGLE_CIVIC_API_KEY.
+UK: TheyWorkForYou — MPs, constituency. Requires TWFY_API_KEY.
+CA: Represent (Open North) — federal MP, provincial MLA/MPP, municipal councillors. No API key needed.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        address: z.string().describe("City name or full address (e.g., 'Denver', '1600 Pennsylvania Ave, Washington DC')"),
+        address: z.string().describe("City name or address (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryCivic(args.address);
-        return { content: [{ type: "text" as const, text: `# Representatives\n\n${formatCivicResults(result)}` }] };
+        const result = await adapterRepresentatives(args.address, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
 
-  // --- Tool 14: query_311_trends ---
+  // --- Tool 14: query_311_trends --- (US only)
   server.registerTool(
     "query_311_trends",
     {
       title: "Query 311 Service Request Trends",
-      description: `Analyze 311 service request trends for a city. Returns top complaint categories, request volumes, and monthly trends. Uses server-side SoQL aggregation — fast and token-light.
+      description: `Analyze 311 service request trends for a US city. Returns top complaint categories, request volumes, and monthly trends. US only.
 
 Available cities: ${list311Cities().join(", ")}.
 
@@ -736,18 +725,23 @@ Great for understanding what residents are actually reporting: potholes, noise, 
   server.registerTool(
     "query_transit",
     {
-      title: "Query Public Transit Performance",
-      description: `Public transit ridership and service data from the National Transit Database (NTD). Shows ridership by agency and mode (bus, subway, light rail, commuter rail), service hours, and efficiency.
+      title: "Query Public Transit / Transport",
+      description: `Public transit and transport data for a city in the US or UK.
 
-${listTransitCities().length} cities available. No API key needed.`,
+US: NTD — ridership by agency and mode, service hours, efficiency (${listTransitCities().length} cities).
+UK: DfT — road traffic, bus passengers, rail station usage (8 major cities).
+CA: Not yet available.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'NYC', 'Chicago', 'Denver')"),
+        city: z.string().describe("City name (e.g., 'NYC', 'Manchester', 'Chicago')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryTransit(args.city);
-        return { content: [{ type: "text" as const, text: `# ${result.city} — Transit\n\n${formatTransitResults(result)}` }] };
+        const result = await adapterTransport(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
@@ -758,30 +752,35 @@ ${listTransitCities().length} cities available. No API key needed.`,
   server.registerTool(
     "query_schools",
     {
-      title: "Query School District Data",
-      description: `School district data from the National Center for Education Statistics (NCES). Returns enrollment, number of schools, student-teacher ratios, and finance data (revenue breakdown, per-pupil spending).
+      title: "Query School Data",
+      description: `School data for a city in the US or UK.
 
-${listSchoolCities().length} cities available. No API key needed. Data is county-level from the CCD (Common Core of Data).`,
+US: NCES — enrollment, student-teacher ratios, finance data (${listSchoolCities().length} cities).
+UK: DfE GIAS — school counts, types, Ofsted ratings by local authority.
+CA: Not yet available.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'Denver', 'Austin', 'NYC')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Austin')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await querySchools(args.city);
-        return { content: [{ type: "text" as const, text: `# ${result.city} — Schools\n\n${formatSchoolResults(result)}` }] };
+        const result = await adapterSchools(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
 
-  // --- Tool 17: query_permits ---
+  // --- Tool 17: query_permits --- (US only)
   server.registerTool(
     "query_permits",
     {
       title: "Query Building Permits",
-      description: `Building permit trends from the Census Bureau's Building Permits Survey. Shows 5-year trend (2020-2024) of permits and housing units authorized at the county level.
+      description: `Building permit trends from the Census Bureau's Building Permits Survey. US only. Shows 5-year trend (2020-2024) of permits and housing units authorized at the county level.
 
 ${listPermitCities().length} cities available. Rising permits = development activity; declining = slowdown.`,
       inputSchema: z.object({
@@ -803,33 +802,36 @@ ${listPermitCities().length} cities available. Rising permits = development acti
     "query_budget",
     {
       title: "Query City Budget",
-      description: `City government budget breakdown from published municipal budgets. Shows total budget, per-capita spending, and spending by category (police, fire, education, infrastructure, etc.).
+      description: `City government budget data for a city in the US or UK.
 
-${listBudgetCities().length} major cities available. Great for understanding city priorities — where money goes vs. what residents care about.`,
+US: Published municipal budgets — total budget, per-capita spending, category breakdown (${listBudgetCities().length} cities).
+UK: Local authority spending — council tax Band D, total spending, category breakdown (11 cities).
+CA: Not yet available.
+
+Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'NYC', 'Denver', 'SF')"),
+        city: z.string().describe("City name (e.g., 'NYC', 'Manchester', 'Denver')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const result = await queryBudget(args.city);
-        return { content: [{ type: "text" as const, text: `# ${result.city} — City Budget\n\n${formatBudgetResults(result)}` }] };
+        const result = await adapterBudget(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
       }
     }
   );
 
-  // --- Tool: query_traffic ---
+  // --- Tool: query_traffic --- (US only)
   server.registerTool(
     "query_traffic",
     {
       title: "Query Traffic Safety & Congestion",
-      description: `Traffic safety data from NHTSA FARS (Fatality Analysis Reporting System) and TTI congestion metrics. Returns fatal crash statistics (2019-2022) including pedestrian, cyclist, and alcohol-related breakdowns.
+      description: `Traffic safety data from NHTSA FARS and TTI congestion metrics. US only. Returns fatal crash statistics (2019-2022) including pedestrian, cyclist, and alcohol-related breakdowns.
 
-County-level data as primary view with state-level context. Falls back to state-only if county data is unavailable.
-
-Congestion data (TTI Urban Mobility Report) available for ${listTrafficCities().length} metros — annual delay hours and cost per commuter.
+County-level data as primary view with state-level context. Congestion data for ${listTrafficCities().length} metros.
 
 No API key needed. Works for any US city via geo-resolver.`,
       inputSchema: z.object({
@@ -851,19 +853,22 @@ No API key needed. Works for any US city via geo-resolver.`,
     "create_city_briefing",
     {
       title: "Create Comprehensive City Briefing",
-      description: `Pull data from ALL available sources and assemble a structured executive briefing for any US city. Covers demographics, economy, housing, safety, quality of life, government, and community voice.
+      description: `Pull data from ALL available sources and assemble a structured executive briefing for a city in the US, UK, or Canada.
 
-This is the "give me everything" tool — fetches 14 data sources in parallel. Takes 10-20 seconds but returns a complete city profile.
+US: 14 data sources (Census, FRED, BLS, FBI, NWS, AirNow, HUD, USGS, Civic, 311, Transit, Schools, Permits, Budget).
+UK: 11 data sources (ONS demographics/economics/housing, Police crime, Met Office, DEFRA, Environment Agency, DfT, DfE, TWFY, Budget).
+CA: 9 data sources (StatCan demographics/economics/employment/crime/housing, MSC weather/air/water, Represent).
 
-Great for: QBR prep, council presentations, new market research, benchmarking.`,
+The "give me everything" tool. Takes 10-20 seconds. Country auto-detected or specify with country parameter.`,
       inputSchema: z.object({
-        city: z.string().describe("City name (e.g., 'Denver', 'Austin', 'NYC')"),
+        city: z.string().describe("City name (e.g., 'Denver', 'Manchester', 'Toronto')"),
+        country: countryParam,
       }),
     },
     async (args) => {
       try {
-        const briefing = await buildCityBriefing(args.city);
-        return { content: [{ type: "text" as const, text: formatBriefing(briefing) }] };
+        const result = await adapterBriefing(args.city, args.country as Country | undefined);
+        return { content: [{ type: "text" as const, text: result.formatted }] };
       } catch (error) {
         return { content: [{ type: "text" as const, text: `Error creating briefing for "${args.city}": ${error instanceof Error ? error.message : String(error)}` }] };
       }

@@ -35,6 +35,65 @@ export type SocrataRow = Record<string, string | number | null>;
 export const CATEGORIES = ["crime", "311", "housing", "permits"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
+// ── Multi-Country Types ──────────────────────────────────────────────────────
+
+export type Country = 'US' | 'UK' | 'CA';
+
+/**
+ * Unified geo resolution that works for US, UK, and Canada.
+ * Common fields are always present; country-specific fields are optional.
+ */
+export interface UnifiedGeoResolution {
+  /** Original input */
+  input: string;
+  /** Normalized city name */
+  city: string;
+  /** Country code */
+  country: Country;
+  /** Latitude */
+  lat: number;
+  /** Longitude */
+  lon: number;
+  /** Admin area name (county in US, local authority in UK, census division in CA) */
+  adminArea: string;
+  /** Admin area code */
+  adminAreaCode: string;
+  /** State, province, or region name */
+  stateOrProvince: string;
+  /** Whether this came from cache */
+  cached: boolean;
+
+  // ── US-specific ──
+  /** 2-digit state FIPS */
+  stateFips?: string;
+  /** 3-digit county FIPS */
+  countyFips?: string;
+  /** Full 5-digit county FIPS (state + county) */
+  fullCountyFips?: string;
+  /** State abbreviation (e.g., "CO") */
+  stateAbbrev?: string;
+  /** ZIP code (5-digit) */
+  zip?: string | null;
+
+  // ── UK-specific ──
+  /** Local Authority District code (e.g., "E09000001") */
+  ladCode?: string;
+  /** Region code (e.g., "E12000007" for London) */
+  regionCode?: string;
+  /** Postcode (e.g., "SW1A 1AA") */
+  postcode?: string;
+  /** Parliamentary constituency code */
+  constituencyCode?: string;
+
+  // ── CA-specific ──
+  /** Statistics Canada census division ID */
+  censusDivisionId?: string;
+  /** Province code (e.g., "ON", "BC") */
+  provinceCode?: string;
+  /** Postal code (e.g., "M5H 2N2") */
+  postalCode?: string;
+}
+
 // Formatted result returned to Claude
 export interface QueryResult {
   city: string;
