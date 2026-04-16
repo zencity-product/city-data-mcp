@@ -70,7 +70,12 @@ export async function resolveCity(input: string, country?: Country): Promise<Uni
   // Check if input contains a country hint
   const countryHint = detectCountryHint(input);
   if (countryHint) {
-    return resolveCity(input.replace(/,\s*(uk|united kingdom|england|scotland|wales|canada|ca|us|usa|united states)$/i, "").trim(), countryHint);
+    // For US state abbreviations (e.g., "Bakersfield, CA"), pass through as-is — the US resolver handles "City, STATE"
+    if (countryHint === 'US' && /,\s*[A-Z]{2}\s*$/i.test(input)) {
+      return resolveUSCity(input);
+    }
+    // For explicit country names, strip the country suffix before resolving
+    return resolveCity(input.replace(/,\s*(uk|united kingdom|england|scotland|wales|canada|us|usa|united states)$/i, "").trim(), countryHint);
   }
 
   // Try US first (most common use case), then UK, then CA
@@ -98,15 +103,25 @@ export async function resolveCity(input: string, country?: Country): Promise<Uni
   );
 }
 
+// Valid US state/territory abbreviations — used to distinguish "CA" (California) from "CA" (Canada)
+const US_STATE_ABBREVS = new Set([
+  "AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN",
+  "IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH",
+  "NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT",
+  "VT","VA","WA","WV","WI","WY","AS","GU","MP","PR","VI",
+]);
+
 function detectCountryHint(input: string): Country | null {
   const lower = input.toLowerCase();
-  if (/,\s*(uk|united kingdom|england|scotland|wales|northern ireland)\s*$/i.test(lower)) return 'UK';
-  if (/,\s*(canada|ca)\s*$/i.test(lower)) return 'CA';
-  if (/,\s*(us|usa|united states)\s*$/i.test(lower)) return 'US';
-  // US state abbreviation patterns (e.g., "Springfield, IL")
-  if (/,\s*[A-Z]{2}\s*$/i.test(input) && !/,\s*(uk|ca)\s*$/i.test(lower)) {
-    // Could be US state — let US resolver handle it
+
+  // Check US state abbreviations FIRST — "City, CA" is California, not Canada
+  const stateMatch = input.match(/,\s*([A-Z]{2})\s*$/);
+  if (stateMatch && US_STATE_ABBREVS.has(stateMatch[1].toUpperCase())) {
     return 'US';
   }
+
+  if (/,\s*(uk|united kingdom|england|scotland|wales|northern ireland)\s*$/i.test(lower)) return 'UK';
+  if (/,\s*(canada)\s*$/i.test(lower)) return 'CA';
+  if (/,\s*(us|usa|united states)\s*$/i.test(lower)) return 'US';
   return null;
 }

@@ -155,7 +155,9 @@ const cache = new Map<string, UnifiedGeoResolution>();
  */
 export async function resolveUSCity(input: string): Promise<UnifiedGeoResolution> {
   const normalized = input.toLowerCase().trim();
-  const aliased = ALIASES[normalized] || normalized;
+  // Strip state suffix for built-in/alias lookup: "bakersfield, ca" → "bakersfield"
+  const withoutState = normalized.replace(/,\s*[a-z]{2}\s*$/, "").trim();
+  const aliased = ALIASES[normalized] || ALIASES[withoutState] || withoutState;
 
   if (cache.has(aliased)) {
     return { ...cache.get(aliased)!, cached: true };
@@ -186,7 +188,13 @@ export async function resolveUSCity(input: string): Promise<UnifiedGeoResolution
     return result;
   }
 
-  let geoResult = await tryGeocodeWithGeography(aliased);
+  // Primary fallback: TIGERweb Incorporated Places API (works for any US city)
+  let geoResult = await tryTigerWebPlaces(normalized, input);
+
+  // Secondary fallback: Census Geocoder (works for addresses, sometimes cities)
+  if (!geoResult) {
+    geoResult = await tryGeocodeWithGeography(aliased);
+  }
 
   if (!geoResult) {
     geoResult = await tryGeocodeWithFallback(aliased, input);
@@ -204,6 +212,89 @@ export async function resolveUSCity(input: string): Promise<UnifiedGeoResolution
 
 /** Backward-compat export matching the old function signature */
 export const resolveCity = resolveUSCity;
+
+// ── State abbreviation → FIPS mapping (reverse of STATE_FIPS_TO_ABBREV) ──
+const STATE_ABBREV_TO_FIPS: Record<string, string> = Object.fromEntries(
+  Object.entries(STATE_FIPS_TO_ABBREV).map(([fips, abbrev]) => [abbrev, fips])
+);
+
+const TIGERWEB_PLACES = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Places_CouSub_ConCity_SubMCD/MapServer/4/query";
+
+/**
+ * Query TIGERweb Incorporated Places for a US city.
+ * This is the most reliable API for resolving city names — it covers all incorporated places.
+ */
+async function tryTigerWebPlaces(normalized: string, originalInput: string): Promise<UnifiedGeoResolution | null> {
+  try {
+    // Parse "city, state" format
+    const parts = normalized.split(",").map(p => p.trim());
+    let cityName = parts[0];
+    let stateFilter = "";
+
+    if (parts.length >= 2) {
+      const stateCode = parts[parts.length - 1].toUpperCase();
+      const stateFips = STATE_ABBREV_TO_FIPS[stateCode];
+      if (stateFips) {
+        stateFilter = `+AND+STATE%3D%27${stateFips}%27`;
+        cityName = parts.slice(0, -1).join(", ").trim();
+      }
+    }
+
+    // Title-case the city name for the query
+    const queryName = cityName.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+    const url = `${TIGERWEB_PLACES}?where=BASENAME%3D%27${encodeURIComponent(queryName)}%27${stateFilter}&outFields=NAME,BASENAME,STATE,PLACE,INTPTLAT,INTPTLON,GEOID&f=json&returnGeometry=false`;
+    const data = await fetchWithTimeout(url, 8000);
+    const features = data?.features;
+    if (!features || features.length === 0) return null;
+
+    // If multiple matches, prefer the one with "city" in the name (over "village", "town", "CDP")
+    const match = features.length === 1
+      ? features[0]
+      : features.find((f: any) => /\bcity\b/i.test(f.attributes.NAME)) || features[0];
+
+    const attrs = match.attributes;
+    const lat = parseFloat(attrs.INTPTLAT);
+    const lon = parseFloat(attrs.INTPTLON);
+    const stateFips = attrs.STATE;
+    const stateAbbrev = STATE_FIPS_TO_ABBREV[stateFips] || "";
+
+    // Get county info from FCC Area API using the lat/lon
+    let countyFips = "";
+    let countyName = "Unknown County";
+    try {
+      const fccUrl = `${FCC_API}?lat=${lat}&lon=${lon}&format=json`;
+      const fccData = await fetchWithTimeout(fccUrl, 5000);
+      const fccResult = fccData?.results?.[0];
+      if (fccResult) {
+        countyFips = fccResult.county_fips?.slice(2) || "";
+        countyName = fccResult.county_name || "Unknown County";
+      }
+    } catch {
+      // FCC lookup optional — continue without county
+    }
+
+    return {
+      input: originalInput,
+      city: attrs.BASENAME,
+      country: 'US',
+      lat,
+      lon,
+      adminArea: countyName,
+      adminAreaCode: `${stateFips}${countyFips}`,
+      stateOrProvince: stateAbbrev,
+      cached: false,
+      stateFips,
+      countyFips,
+      fullCountyFips: `${stateFips}${countyFips}`,
+      stateAbbrev,
+      zip: null,
+    };
+  } catch (e) {
+    console.error(`[city-data-mcp] TIGERweb places lookup failed:`, e);
+    return null;
+  }
+}
 
 async function tryGeocodeWithGeography(city: string): Promise<UnifiedGeoResolution | null> {
   try {
